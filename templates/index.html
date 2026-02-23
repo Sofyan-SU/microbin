@@ -134,7 +134,6 @@
                     <option value="json">JSON</option>
                     <option value="xml">XML</option>
                 </optgroup>
-                </optgroup>
             </select>
         </div>
         {%- else %}
@@ -188,7 +187,7 @@
             <label for="file" id="attach-file-button-label"><a role="button" id="attach-file-button">Select or drop file
                     attachment</a></label>
             <br>
-            <input type="file" id="file" name="file" />
+            <input type="file" id="file" name="file" multiple />
         </div>
         {% endif %}
         <b>
@@ -217,6 +216,7 @@
 </form>
 <br>
 <br>
+<script type="text/javascript" src="{{ args.public_path_as_str() }}/static/jszip.min.js"></script>
 <script>
     const form = document.getElementById("pasta-form");
     const submitButton = document.getElementById("submit-button");
@@ -243,68 +243,77 @@
             if (fileOversized()) return false;
             // {%- endif %}
 
-            if (privacyDropdown.value == "secret") {
-                let randomKey = Array.from(Array(16), () => Math.floor(Math.random() * 36).toString(36)).join('');
-                hiddenRandomKeyField.value = randomKey;
-                hiddenEncryptedRandomKeyField.value = encryptWithPassword(passwordField.value, randomKey);
-                if (contentInput.value.trim() != "") {
-                    content.value = encryptWithPassword(passwordField.value.trim(), contentInput.value);
-                } else {
-                    content.value = contentInput.value;
-                }
-                hiddenPlainKeyField.name = "";
-                // {% if !args.no_file_upload %}
-                await encryptFile();
-                // {%- endif %}
+        if (privacyDropdown.value == "secret") {
+            submitButton.disabled = true;
+            submitButton.value = 'Encrypting...';
+            // Yield to UI to allow text update
+            await new Promise(r => setTimeout(r, 10));
+
+            let randomKey = Array.from(Array(16), () => Math.floor(Math.random() * 36).toString(36)).join('');
+            hiddenRandomKeyField.value = randomKey;
+            hiddenEncryptedRandomKeyField.value = encryptWithPassword(passwordField.value, randomKey);
+            if (contentInput.value.trim() != "") {
+                content.value = encryptWithPassword(passwordField.value.trim(), contentInput.value);
             } else {
-                hiddenPlainKeyField.value = passwordField.value;
-                hiddenEncryptedClientSide.name = "";
-                hiddenEncryptedRandomKeyField.name = "";
-                hiddenRandomKeyField.name = "";
                 content.value = contentInput.value;
             }
+            hiddenPlainKeyField.name = "";
+            // {% if !args.no_file_upload %}
+            await encryptFile();
+            // {%- endif %}
         } else {
-            if (privacyDropdown.value != "public" && privacyDropdown.value != "unlisted") {
-                passwordField.focus();
-                return false;
-            }
+            hiddenPlainKeyField.value = passwordField.value;
             hiddenEncryptedClientSide.name = "";
+            hiddenEncryptedRandomKeyField.name = "";
+            hiddenRandomKeyField.name = "";
             content.value = contentInput.value;
         }
-        // {%- else %}
-        hiddenEncryptedClientSide.name = "";
-        content.value = contentInput.value;
-        // {%- endif %}
-
-        if (contentInput.value.trim() == "" && (hiddenFileButton == undefined || hiddenFileButton.files.length == 0)) {
-            contentInput.focus();
+    } else {
+        if (privacyDropdown.value != "public" && privacyDropdown.value != "unlisted") {
+            passwordField.focus();
             return false;
         }
+        hiddenEncryptedClientSide.name = "";
+        content.value = contentInput.value;
+    }
+    // {%- else %}
+    hiddenEncryptedClientSide.name = "";
+    content.value = contentInput.value;
+    // {%- endif %}
 
-        let showProgress = false;
+    if (contentInput.value.trim() == "" && (hiddenFileButton == undefined || hiddenFileButton.files.length == 0)) {
+        contentInput.focus();
+        return false;
+    }
 
-        submitButton.disabled = true;
-        submitButton.textContent = 'Uploading...';
+    let showProgress = false;
 
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '{{ args.public_path_as_str() }}/upload', true);
+    submitButton.disabled = true;
+    submitButton.value = 'Uploading...';
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '{{ args.public_path_as_str() }}/upload', true);
 
         xhr.upload.onprogress = function (event) {
             if (showProgress) {
                 const progressPercent = Math.round((event.loaded / event.total) * 100);
-                submitButton.value = `${progressPercent}%`;
-            }
-        };
-
-        xhr.onreadystatechange = function () {
-            if (xhr.readyState === XMLHttpRequest.DONE) {
-                if (xhr.status === 200 || xhr.status === 302) {
-                    window.location.href = xhr.responseURL;
+                if (progressPercent === 100) {
+                    submitButton.value = 'Processing...';
                 } else {
-                    console.log('Request failed with status:', xhr.status);
+                    submitButton.value = `${progressPercent}%`;
                 }
             }
         };
+
+        xhr.onload = function () { // Use onload instead of onreadystatechange for cleaner status check
+             if (xhr.status === 200 || xhr.status === 302) {
+                window.location.href = xhr.responseURL;
+            } else {
+                submitButton.value = 'Failed';
+                submitButton.disabled = false;
+            }
+        };
+
 
         const formData = new FormData(form);
         xhr.send(formData);
@@ -357,21 +366,67 @@
     function encryptFile() {
         return new Promise((resolve, reject) => {
             if (hiddenFileButton.files.length > 0) {
-                const file = hiddenFileButton.files[0];
+                // If multiple files and encrypting, zip them first
+                if (hiddenFileButton.files.length > 1) {
+                     const zip = new JSZip();
+                     const promises = [];
 
-                const reader = new FileReader();
-                reader.onload = function (event) {
-                    const encryptedContents = encryptFileWithPassword(passwordField.value.trim(), new Uint8Array(event.target.result));
+                     for (let i = 0; i < hiddenFileButton.files.length; i++) {
+                        const file = hiddenFileButton.files[i];
+                        const promise = new Promise((fileResolve, fileReject) => {
+                            const reader = new FileReader();
+                            reader.onload = function(event) {
+                                zip.file(file.name, event.target.result);
+                                fileResolve();
+                            };
+                            reader.readAsArrayBuffer(file);
+                        });
+                        promises.push(promise);
+                     }
 
-                    // Replace selected file with its encrypted version
-                    const encryptedFile = new File([encryptedContents], file.name, { type: file.type });
+                     Promise.all(promises).then(() => {
+                        zip.generateAsync({type:"blob"}).then((content) => {
+                            content.arrayBuffer().then((buffer) => {
+                                const encryptedContents = encryptFileWithPassword(passwordField.value.trim(), new Uint8Array(buffer));
+                                const encryptedFile = new File([encryptedContents], "archive.zip.enc", { type: "application/octet-stream" });
+                                
+                                let container = new DataTransfer();
+                                container.items.add(encryptedFile);
+                                hiddenFileButton.files = container.files;
+                                resolve();
+                            });
+                        });
+                     });
 
+                } else {
+                    // Single file logic
                     let container = new DataTransfer();
-                    container.items.add(encryptedFile);
-                    hiddenFileButton.files = container.files;
-                    resolve(encryptedFile);
-                };
-                reader.readAsArrayBuffer(file);
+                    let promises = [];
+
+                    for (let i = 0; i < hiddenFileButton.files.length; i++) {
+                        const file = hiddenFileButton.files[i];
+                        const promise = new Promise((fileResolve, fileReject) => {
+                            const reader = new FileReader();
+                            reader.onload = function (event) {
+                                const encryptedContents = encryptFileWithPassword(passwordField.value.trim(), new Uint8Array(event.target.result));
+                                // Replace selected file with its encrypted version
+                                const encryptedFile = new File([encryptedContents], file.name + ".enc", { type: file.type });
+                                fileResolve(encryptedFile);
+                            };
+                            reader.readAsArrayBuffer(file);
+                        });
+                        promises.push(promise);
+                    }
+
+                    Promise.all(promises).then((encryptedFiles) => {
+                        for (const encryptedFile of encryptedFiles) {
+                                container.items.add(encryptedFile);
+                        }
+                        hiddenFileButton.files = container.files;
+                        resolve();
+                    });
+                }
+
             } else {
                 resolve();
             }
@@ -379,7 +434,11 @@
     }
 
     hiddenFileButton.addEventListener('change', function () {
-        attachFileButton.textContent = "Attached: " + this.files[0].name;
+        if (this.files.length > 1) {
+            attachFileButton.textContent = "Attached: " + this.files.length + " files";
+        } else if (this.files.length === 1) {
+            attachFileButton.textContent = "Attached: " + this.files[0].name;
+        }
         fileOversized();
     });
 
@@ -394,9 +453,15 @@
 
     dropContainer.ondrop = function (evt) {
         const dataTransfer = new DataTransfer();
-        dataTransfer.items.add(evt.dataTransfer.files[0]);
+        for (let i = 0; i < evt.dataTransfer.files.length; i++) {
+             dataTransfer.items.add(evt.dataTransfer.files[i]);
+        }
         hiddenFileButton.files = dataTransfer.files;
-        attachFileButton.textContent = "Attached: " + hiddenFileButton.files[0].name;
+        if (hiddenFileButton.files.length > 1) {
+             attachFileButton.textContent = "Attached: " + hiddenFileButton.files.length + " files";
+        } else {
+             attachFileButton.textContent = "Attached: " + hiddenFileButton.files[0].name;
+        }
         evt.preventDefault();
     };
     // {%- endif %}
