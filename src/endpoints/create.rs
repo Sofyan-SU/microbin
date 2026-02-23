@@ -10,6 +10,7 @@ use actix_web::error::ErrorBadRequest;
 use actix_web::cookie::Cookie;
 use actix_web::{get, web, Error, HttpResponse, Responder};
 use askama::Template;
+use bytes::BytesMut;
 use bytesize::ByteSize;
 use futures::TryStreamExt;
 use log::warn;
@@ -190,13 +191,13 @@ pub async fn create(
                 continue;
             }
             "content" => {
-                let mut content = String::from("");
+                let mut buf = BytesMut::new();
                 while let Some(chunk) = field.try_next().await? {
-                    content.push_str(std::str::from_utf8(&chunk).unwrap().to_string().as_str());
+                    buf.extend_from_slice(&chunk);
                 }
-                if !content.is_empty() {
-                    new_pasta.content = content;
-
+                if !buf.is_empty() {
+                    new_pasta.content = String::from_utf8(buf.to_vec())
+                        .map_err(|_| ErrorBadRequest("Invalid UTF-8 in content"))?;
                     new_pasta.pasta_type = if is_valid_url(new_pasta.content.as_str()) {
                         String::from("url")
                     } else {
@@ -345,7 +346,7 @@ pub async fn create(
 
     if encrypt_server {
         Ok(HttpResponse::Found()
-            .append_header(("Location", format!("/auth/{}/success", slug)))
+            .append_header(("Location", format!("{}/auth/{}/success", ARGS.public_path_as_str(), slug)))
             .finish())
     } else {
         // Generate time-limited token for initial view using Hashids
