@@ -1,0 +1,31 @@
+name: Docker Image CI
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag for the release (e.g., v1.0.0)'
+        required: true
+        default: 'v2.1.1'
+
+jobs:
+  build:
+    # Use the native ARM64 runner provided by GitHub
+    runs-on: ubuntu-24.04-arm64 
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build the Docker image
+      # No Buildx or QEMU needed; this runs natively!
+      run: docker build . --file Dockerfile --tag my-image-name:latest
+
+    - name: Create Release and Upload Asset
+      uses: softprops/action-gh-release@v2
+      if: github.event_name == 'workflow_dispatch'
+      with:
+        tag_name: ${{ github.event.inputs.release_tag }}
+        files: ./my-image-arm64.tar
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
